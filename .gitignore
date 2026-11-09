@@ -4,3 +4,4 @@ obj/
 *.user
 appsettings.Local.json
 src/PersonalAgent.Agent/appsettings.Development.json
+/src/PersonalAgent.Chat/appsettings.Development.json
