@@ -1,0 +1,6 @@
+bin/
+obj/
+.vs/
+*.user
+appsettings.Local.json
+src/PersonalAgent.Agent/appsettings.Development.json

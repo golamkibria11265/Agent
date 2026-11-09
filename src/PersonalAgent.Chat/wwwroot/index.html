@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal Agent</title>
+<style>
+  :root { --bg:#f6f6f4; --panel:#fff; --text:#1c1c1a; --muted:#6b6a65; --border:#dcdad3; --user:#e6f1fb; --agent:#f1efe8; --accent:#185fa5; --err:#a32d2d; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1a1a18; --panel:#242422; --text:#eeede8; --muted:#a3a198; --border:#3b3a36; --user:#1f3a55; --agent:#2e2d2a; --accent:#85b7eb; --err:#f09595; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; justify-content:center; }
+  main { width:100%; max-width:760px; display:flex; flex-direction:column; padding:0 16px; }
+  header { display:flex; justify-content:space-between; align-items:center; padding:16px 0 8px; }
+  h1 { font-size:18px; font-weight:500; margin:0; }
+  button { font:inherit; border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:8px; padding:8px 14px; cursor:pointer; }
+  button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:8px 0; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:12px; white-space:pre-wrap; word-wrap:break-word; }
+  .user { align-self:flex-end; background:var(--user); }
+  .agent { align-self:flex-start; background:var(--agent); }
+  .meta { font-size:12px; color:var(--muted); margin-top:6px; }
+  .error { color:var(--err); }
+  form { display:flex; gap:8px; padding:12px 0 16px; }
+  textarea { flex:1; font:inherit; resize:none; border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:var(--panel); color:var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Personal Agent</h1><button id="new" type="button">New chat</button></header>
+  <div id="log" aria-live="polite"></div>
+  <form id="form">
+    <textarea id="input" rows="2" maxlength="4000" placeholder="Ask something (Enter to send, Shift+Enter for a new line)" required></textarea>
+    <button id="send" class="primary" type="submit">Send</button>
+  </form>
+</main>
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+let agentBaseUrl = null;
+let sessionId = null;
+try { sessionId = sessionStorage.getItem('sessionId'); } catch {}
+
+function add(role, text, meta, isError) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + role + (isError ? ' error' : '');
+  el.textContent = text;                       // textContent: model output is never rendered as HTML
+  if (meta) { const m = document.createElement('div'); m.className = 'meta'; m.textContent = meta; el.appendChild(m); }
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+async function getAgentUrl() {
+  if (agentBaseUrl) return agentBaseUrl;
+  const cfg = await (await fetch('/config.json')).json();
+  return agentBaseUrl = cfg.agentBaseUrl.replace(/\/$/, '');
+}
+
+async function submit() {
+  const message = input.value.trim();
+  if (!message) return;
+  add('user', message);
+  input.value = '';
+  send.disabled = true;
+  const pending = add('agent', 'Thinking...');
+  try {
+    const res = await fetch(await getAgentUrl() + '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, message })
+    });
+    if (!res.ok) {
+      let detail = 'Request failed (' + res.status + ').';
+      try { detail = (await res.json()).detail || detail; } catch {}
+      pending.remove(); add('agent', detail, null, true);
+      return;
+    }
+    const data = await res.json();
+    sessionId = data.sessionId;
+    try { sessionStorage.setItem('sessionId', sessionId); } catch {}
+    pending.remove();
+    const tools = data.toolsUsed && data.toolsUsed.length ? 'Tools used: ' + [...new Set(data.toolsUsed)].join(', ') : '';
+    add('agent', data.reply || '(empty reply)', tools);
+  } catch (e) {
+    pending.remove(); add('agent', 'Cannot reach the agent. Is it running?', null, true);
+  } finally {
+    send.disabled = false; input.focus();
+  }
+}
+
+document.getElementById('form').addEventListener('submit', e => { e.preventDefault(); submit(); });
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
+document.getElementById('new').addEventListener('click', () => {
+  sessionId = null; try { sessionStorage.removeItem('sessionId'); } catch {}
+  log.innerHTML = ''; input.focus();
+});
+</script>
+</body>
+</html>
