@@ -1,12 +1,11 @@
 using System.Collections.Concurrent;
-using Anthropic.Models.Messages;
 
 namespace PersonalAgent.Agent;
 
 public sealed class Session(string id)
 {
     public string Id { get; } = id;
-    public List<MessageParam> History { get; } = [];
+    public List<ConversationItem> History { get; } = [];
     public SemaphoreSlim Lock { get; } = new(1, 1); // one request at a time per conversation
     public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
 }

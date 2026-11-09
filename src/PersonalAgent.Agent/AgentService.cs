@@ -1,15 +1,13 @@
-using System.Text;
-using Anthropic.Models.Messages;
 using Microsoft.Extensions.Options;
 
 namespace PersonalAgent.Agent;
 
 /// <summary>
-/// The agent: sends the conversation to the LLM; if the model asks for tools, runs them via MCP,
-/// feeds results back, and repeats until the model gives a final answer.
+/// The agent: sends the conversation to the LLM (whichever provider is configured); if the model asks
+/// for tools, runs them via MCP, feeds results back, and repeats until the model gives a final answer.
 /// </summary>
 public sealed class AgentService(
-    LlmClient llm, McpToolClient mcp, SessionStore sessions,
+    ILlmClient llm, McpToolClient mcp, SessionStore sessions,
     IOptions<AgentOptions> options, ILogger<AgentService> log)
 {
     private static readonly string[] ReadOnlyHints = ["_list_", "_get_", "_search_"];
@@ -31,75 +29,47 @@ public sealed class AgentService(
             var mcpTools = (await mcp.GetToolsAsync(ct))
                 .Where(t => o.AllowWriteTools || IsReadOnly(t.Name)).ToList();
             var allowed = mcpTools.Select(t => t.Name).ToHashSet();
-            var tools = LlmClient.ToClaudeTools(mcpTools);
+            var toolDefs = mcpTools.Select(t => new ToolDef(t.Name, t.Description ?? "", t.JsonSchema)).ToList();
             var toolsUsed = new List<string>();
 
-            session.History.Add(new UserMessageParam { Content = message });
+            session.History.Add(new UserItem(message));
 
             for (int turn = 1; turn <= o.MaxTurns; turn++)
             {
-                Message response = await llm.CompleteAsync(session.History, tools, ct);
+                LlmResponse response = await llm.CompleteAsync(session.History, toolDefs, o.SystemPrompt, ct);
 
-                if (response.StopReason == "refusal")
+                if (response.Stop == LlmStop.Refusal)
                 {
                     session.History.RemoveRange(checkpoint, session.History.Count - checkpoint);
                     return new(session.Id, "The model declined to answer this request.", toolsUsed);
                 }
 
-                var assistantContent = new List<ContentBlockParam>();
-                var toolCalls = new List<ToolUseBlock>();
-                var text = new StringBuilder();
+                session.History.Add(new AssistantItem(response.Text, response.ToolCalls, response.Native));
 
-                foreach (ContentBlock block in response.Content)
+                if (response.Stop != LlmStop.ToolUse || response.ToolCalls.Count == 0)
                 {
-                    if (block.TryPickText(out TextBlock? t))
-                    {
-                        assistantContent.Add(new TextBlockParam { Text = t.Text });
-                        text.AppendLine(t.Text);
-                    }
-                    else if (block.TryPickThinking(out ThinkingBlock? th))
-                    {
-                        // Thinking blocks must be sent back unchanged.
-                        assistantContent.Add(new ThinkingBlockParam { Thinking = th.Thinking, Signature = th.Signature });
-                    }
-                    else if (block.TryPickRedactedThinking(out RedactedThinkingBlock? rt))
-                    {
-                        assistantContent.Add(new RedactedThinkingBlockParam { Data = rt.Data });
-                    }
-                    else if (block.TryPickToolUse(out ToolUseBlock? tu))
-                    {
-                        assistantContent.Add(new ToolUseBlockParam { ID = tu.ID, Name = tu.Name, Input = tu.Input });
-                        toolCalls.Add(tu);
-                    }
-                }
-                session.History.Add(new AssistantMessageParam { Content = assistantContent });
-
-                if (response.StopReason != "tool_use" || toolCalls.Count == 0)
-                {
-                    if (response.StopReason == "max_tokens") text.AppendLine("\n[Response was cut off.]");
-                    return new(session.Id, text.ToString().Trim(), toolsUsed);
+                    string reply = response.Stop == LlmStop.MaxTokens
+                        ? response.Text + "\n\n[Response was cut off.]" : response.Text;
+                    return new(session.Id, reply, toolsUsed);
                 }
 
                 // Run all requested tools in parallel. Log tool names only, never user text or arguments.
-                var results = await Task.WhenAll(toolCalls.Select(async call =>
+                var results = await Task.WhenAll(response.ToolCalls.Select(async call =>
                 {
                     if (!allowed.Contains(call.Name))
                     {
                         log.LogWarning("Model requested a tool that is not allowed: {Tool}", call.Name);
-                        return new ToolResultBlockParam
-                        {
-                            ToolUseID = call.ID, Content = "This tool is not available.", IsError = true,
-                        };
+                        return new ToolResultItem(call.Id, "This tool is not available.", true);
                     }
 
                     var (output, isError) = await mcp.CallAsync(call.Name, call.Input, ct);
                     log.LogInformation("Session {Session} tool {Tool} error={IsError}", session.Id, call.Name, isError);
                     lock (toolsUsed) toolsUsed.Add(call.Name);
-                    return new ToolResultBlockParam { ToolUseID = call.ID, Content = output, IsError = isError };
+                    return new ToolResultItem(call.Id, output, isError);
                 }));
 
-                // ALL tool results go back in ONE user message.
-                session.History.Add(new UserMessageParam { Content = results.Select(r => (ContentBlockParam)r).ToList() });
+                // ALL tool results go back together, one per tool call.
+                session.History.Add(new ToolResultsItem(results));
             }
 
             return new(session.Id, $"I stopped after {o.MaxTurns} steps without finishing. Please try a simpler request.", toolsUsed);

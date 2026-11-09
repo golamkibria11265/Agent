@@ -24,6 +24,12 @@ dotnet run --project src/PersonalAgent.Agent
 dotnet run --project src/PersonalAgent.Chat      # second terminal
 ```
 
+## Choosing the LLM provider
+Set `"Llm": { "Provider": "Anthropic" }` or `"OpenRouter"` in `appsettings.Development.json` / `appsettings.Production.json`, fill that provider's `ApiKey` and `Model`, and restart. Code: `Llm/ILlmClient.cs` (contract), `Llm/AnthropicLlmClient.cs`, `Llm/OpenRouterLlmClient.cs`; the agent loop is provider-neutral.
+- If the chosen provider has no key or model, the app still starts and `/api/chat` returns 503 until it is set.
+- Unknown provider names stop the app at startup with a clear message.
+- OpenRouter free models (ids ending `:free`) are for learning with dummy data only: tool calling is often unreliable, limits are low, and providers may log prompts. Check openrouter.ai/models for a free model that lists tool support. Never send customer or payment data.
+
 ## Environments (which appsettings file is used)
 ASP.NET Core picks the file from `ASPNETCORE_ENVIRONMENT`. Later sources win: `appsettings.json` -> `appsettings.{Environment}.json` -> environment variables.
 
@@ -43,8 +49,10 @@ ASP.NET Core picks the file from `ASPNETCORE_ENVIRONMENT`. Later sources win: `a
 ## Configuration (appsettings.json or environment variables, `__` as separator)
 | Setting | Default |
 |---|---|
-| `Anthropic__ApiKey` | required: appsettings.Development.json in dev, env var or secret store in prod |
-| `Agent__Model` | `claude-opus-5-5` |
+| `Llm__Provider` | `Anthropic` or `OpenRouter`: chooses which LLM client is used |
+| `Anthropic__ApiKey`, `Anthropic__Model` | used when Provider is `Anthropic` (model default `claude-opus-5-5`) |
+| `OpenRouter__ApiKey`, `OpenRouter__Model` | used when Provider is `OpenRouter` (model must support tool calling) |
+| `OpenRouter__BaseUrl`, `OpenRouter__MaxTokens` | default `https://openrouter.ai/api/v1`, `4096` |
 | `Agent__AllowWriteTools` | `false` (only `_list_`, `_get_`, `_search_` tools are exposed) |
 | `Agent__MaxTurns` | `10` |
 | `Mcp__Endpoint` | `http://127.0.0.1:5080/mcp` |
